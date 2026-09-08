@@ -1,0 +1,66 @@
+# Локальный SearXNG как общий поисковый бэкенд для агентов.
+# Основан на официальном шаблоне:
+# https://github.com/searxng/searxng/blob/master/container/docker-compose.yml
+# Документация: https://docs.searxng.org/admin/installation-docker.html
+
+name: searxng
+
+services:
+  core:
+    container_name: searxng-core
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - ${SEARXNG_HOST:+${SEARXNG_HOST}:}${SEARXNG_PORT:-8080}:${SEARXNG_PORT:-8080}
+    env_file: ./.env
+    volumes:
+      - ./core-config/:/etc/searxng/:Z
+      - core-data:/var/cache/searxng/
+    depends_on:
+      - valkey
+
+  # Бэкенд для доменных пакетов. Наружу не публикуется: к нему обращается
+  # только core по внутренней сети, поэтому порт не пробрасывается.
+  backend:
+    container_name: searxng-backend
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION:-latest}
+    restart: unless-stopped
+    env_file: ./.env
+    volumes:
+      - ./backend-config/:/etc/searxng/:Z
+      - backend-data:/var/cache/searxng/
+
+  # Единая точка входа для агентов: каскад бесплатный ярус -> платный,
+  # бюджет платных ключей в valkey, отбраковка нерелевантной выдачи.
+  router:
+    container_name: searxng-router
+    build: ./router
+    restart: unless-stopped
+    ports:
+      - ${SEARXNG_HOST:+${SEARXNG_HOST}:}${ROUTER_PORT:-8090}:8090
+    environment:
+      SEARXNG_URL: http://searxng-core:8080
+      VALKEY_HOST: valkey
+      ROUTER_PORT: 8090
+      FREE_ENGINES: ${FREE_ENGINES:-google,yandex,bing,duckduckgo web}
+      PAID_ENGINES: ${PAID_ENGINES:-tavily}
+      LIMIT_TAVILY_MONTH: ${LIMIT_TAVILY_MONTH:-1000}
+      LIMIT_TAVILY_DAY: ${LIMIT_TAVILY_DAY:-50}
+    volumes:
+      - ./router/packs.json:/app/packs.json:ro
+    depends_on:
+      - core
+      - valkey
+
+  valkey:
+    container_name: searxng-valkey
+    image: docker.io/valkey/valkey:9-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    volumes:
+      - valkey-data:/data/
+
+volumes:
+  core-data:
+  backend-data:
+  valkey-data:

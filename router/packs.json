@@ -1,0 +1,58 @@
+{
+  "dev sites": [
+    "developer.mozilla.org",
+    "docs.python.org",
+    "habr.com",
+    "wiki.archlinux.org"
+  ],
+  "education": [
+    "foxford.ru",
+    "mccme.ru",
+    "openedu.ru",
+    "resh.edu.ru",
+    "stepik.org"
+  ],
+  "msk transport": [
+    "ictransport.ru",
+    "mos.ru",
+    "mosmetro.ru"
+  ],
+  "philosophy": [
+    "iep.utm.edu",
+    "iphlib.ru",
+    "plato.stanford.edu"
+  ],
+  "pogoda": [
+    "gismeteo.ru"
+  ],
+  "reddit": [
+    "reddit.com"
+  ],
+  "ru geo": [
+    "rgo.ru",
+    "rosstat.gov.ru",
+    "ru.wikipedia.org"
+  ],
+  "ru politics": [
+    "duma.gov.ru",
+    "government.ru",
+    "kommersant.ru",
+    "kremlin.ru",
+    "rbc.ru",
+    "ria.ru",
+    "tass.ru"
+  ],
+  "ru science": [
+    "cyberleninka.ru",
+    "elibrary.ru"
+  ],
+  "tadviser": [
+    "tadviser.ru"
+  ],
+  "world data": [
+    "macrotrends.net",
+    "numbeo.com",
+    "ourworldindata.org",
+    "worldbank.org"
+  ]
+}

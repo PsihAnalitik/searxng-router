@@ -1,0 +1,313 @@
+# Настройки локального инстанса. Всё, что не указано, берётся из дефолтов SearXNG:
+# https://github.com/searxng/searxng/blob/master/searx/settings.yml
+#
+# Состав движков и доменных пакетов подобран по измерениям на этой машине,
+# см. .agent/decision-log.md. Коротко:
+#   - google (!go) держит site: вместе с OR и выдержал 15 запросов подряд -> на нём пакеты;
+#   - bing игнорирует site:, поэтому для пакетов не годится;
+#   - brave / startpage / duckduckgo / mojeek / wikidata / arch linux wiki /
+#     semantic scholar стабильно отдают CAPTCHA, 403 или timeout -> выключены;
+#   - google cse (публичный CX) и свой CSE упираются в отсечку после 6-8 запросов.
+
+use_default_settings: true
+
+general:
+  instance_name: "SearXNG (local)"
+  # Счётчики по движкам в формате OpenMetrics на /metrics — основа учёта расхода
+  # платных ключей. Пароль обязателен, иначе эндпоинт отдаёт 404.
+  open_metrics: "__METRICS_PASSWORD__"
+
+search:
+  # json нужен агентам: дефолт SearXNG отдаёт только html.
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  # qwant исключён из доменных пакетов намеренно: на кириллическом запросе с site:
+  # он возвращает спам-домены (ah.dj, wupewwi.az) вместо фильтрации по домену,
+  # то есть выдаёт мусор под видом результата. На латинице фильтрует корректно.
+  # Дефолт подвешивает движок после CAPTCHA на 3600 с — для локального инстанса это
+  # означает, что один неудачный запрос выбивает google на час и доменные пакеты
+  # перестают работать. Причину (антибот на стороне Google) это не убирает,
+  # но возвращает движок в строй за разумное время.
+  suspended_times:
+    SearxEngineCaptcha: 300
+    SearxEngineTooManyRequests: 120
+    SearxEngineAccessDenied: 300
+
+server:
+  # Инстанс слушает только 127.0.0.1 на хосте, рейт-лимитер не нужен и мешает агенту.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  # secret_key задаётся через SEARXNG_SECRET в .env, в файле его нет намеренно.
+
+valkey:
+  url: valkey://valkey:6379/0
+
+outgoing:
+  # Дефолтные 3 секунды рвали медленные движки на полпути; 6 заметно снижает долю timeout.
+  request_timeout: 6.0
+  max_request_timeout: 15.0
+
+engines:
+
+  # ─────────────────────────── общий веб ───────────────────────────
+  # Выдержали 15 запросов подряд без единого отказа (limits.py).
+
+  - name: google
+    disabled: false
+  - name: yandex
+    disabled: false
+    # Отвечает медленнее общего лимита в 6 с и без этого регулярно рвётся по таймауту,
+    # хотя выдачу отдаёт. Он же резерв доменных пакетов, когда google ловит CAPTCHA.
+    timeout: 12.0
+  - name: qwant
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo web
+    disabled: false
+
+  # Стабильно недоступны из этой сети — выключены, чтобы не тормозить выдачу
+  # и не засорять unresponsive_engines.
+  - name: brave
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: mojeek
+    disabled: true
+  - name: wikidata
+    disabled: true
+  - name: arch linux wiki
+    disabled: true
+  - name: semantic scholar
+    disabled: true
+  - name: baidu
+    disabled: true
+  # CAPTCHA подвешивает движок на час (suspended_times), выдача от этого рвётся.
+  - name: google scholar
+    disabled: true
+
+  # ─────────────────────── код и разработка (!it) ───────────────────────
+  - name: github
+    disabled: false
+  - name: gitlab
+    disabled: false
+  - name: stackoverflow
+    disabled: false
+  - name: askubuntu
+    disabled: false
+  - name: superuser
+    disabled: false
+  - name: hackernews
+    disabled: false
+  - name: lobste.rs
+    disabled: false
+  - name: mdn
+    disabled: false
+  - name: microsoft learn
+    disabled: false
+
+  # ─────────────────────────── наука (!science) ───────────────────────────
+  - name: arxiv
+    disabled: false
+  - name: crossref
+    disabled: false
+  - name: openalex
+    disabled: false
+  - name: pubmed
+    disabled: false
+
+  # ─────────────────────────── погода (!weather) ───────────────────────────
+  # Отдают структурированные данные в поле answers, а не в results.
+  - name: openmeteo
+    disabled: false
+  - name: duckduckgo weather
+    disabled: false
+
+  # ─────────────────────────── новости (!news) ───────────────────────────
+  - name: google news
+    disabled: false
+  - name: bing news
+    disabled: false
+  - name: duckduckgo news
+    disabled: false
+
+  # ─────────────────── доверенный индекс заказчика (ручной) ───────────────────
+  # Свой Programmable Search Engine на 20 сайтах. Отсечка после ~6 запросов подряд
+  # и молчаливый пустой ответ вместо ошибки, поэтому в общую выдачу не включён:
+  # вызывается только явно, бангом !my.
+  - name: mycse
+    engine: google_cse
+    shortcut: my
+    categories: [trusted]
+    CX: "f6c2c79a1cb9b40ca"
+    timeout: 15.0
+
+  # ─────────────────── Tavily: поисковый API для агентов ───────────────────
+  # REST-API с ключом: ни CAPTCHA, ни антибота, кириллица работает без плясок
+  # с Accept-Language. Ключ подставляется скриптом scripts/render-settings.py
+  # из TAVILY_API_KEY в .env — в шаблоне стоит плейсхолдер.
+  #
+  # Ограничение json_engine: {query} попадает в тело как сырой текст, поэтому
+  # запрос с двойной кавычкой сломает JSON и вернёт HTTP 400. FIXME при
+  # необходимости — обходится только собственным модулем движка.
+  - name: tavily
+    engine: json_engine
+    shortcut: tv
+    categories: [general, web]
+    timeout: 20.0
+    method: POST
+    headers:
+      Content-Type: application/json
+      Authorization: Bearer __TAVILY_API_KEY__
+    request_body: '{{"query": "{query}", "max_results": 10}}'
+    search_url: https://api.tavily.com/search
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+  # ─────────────────────────── доменные пакеты ───────────────────────────
+  # Каждый пакет — движок json_engine с зашитым site:-фильтром. Запрос уходит в
+  # отдельный инстанс searxng-backend, наружу тот не публикуется.
+  # language задан явно и обязателен: движок добавляет к запросу заголовок
+  # Accept-Language: en-US, из-за которого приёмная сторона ищет по-английски —
+  # кириллические запросы давали 0, а латинские возвращали случайные субдомены
+  # вместо релевантной выдачи. Параметр language=... перекрывает этот заголовок.
+  # Вызывается бангом (!dev) либо параметром engines=<имя>.
+
+  - name: dev sites
+    engine: json_engine
+    shortcut: dev
+    categories: [it]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Ahabr.com+OR+site%3Adocs.python.org+OR+site%3Awiki.archlinux.org+OR+site%3Adeveloper.mozilla.org&format=json&language=ru&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: pogoda
+    engine: json_engine
+    shortcut: pog
+    categories: [weather]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Agismeteo.ru&format=json&language=ru&engines=google,yandex
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: msk transport
+    engine: json_engine
+    shortcut: msk
+    categories: [msk]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Amos.ru+OR+site%3Amosmetro.ru+OR+site%3Aictransport.ru&format=json&language=ru&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: ru politics
+    engine: json_engine
+    shortcut: rupol
+    categories: [news]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Atass.ru+OR+site%3Aria.ru+OR+site%3Akommersant.ru+OR+site%3Arbc.ru+OR+site%3Aduma.gov.ru+OR+site%3Akremlin.ru+OR+site%3Agovernment.ru&format=json&language=ru&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: tadviser
+    engine: json_engine
+    shortcut: tadv
+    categories: [people]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Atadviser.ru&format=json&language=ru&engines=google,yandex
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: ru geo
+    engine: json_engine
+    shortcut: rugeo
+    categories: [rugeo]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Argo.ru+OR+site%3Arosstat.gov.ru+OR+site%3Aru.wikipedia.org&format=json&language=ru&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: world data
+    engine: json_engine
+    shortcut: world
+    categories: [world]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Anumbeo.com+OR+site%3Aworldbank.org+OR+site%3Amacrotrends.net+OR+site%3Aourworldindata.org&format=json&language=en&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: reddit
+    engine: json_engine
+    shortcut: rdt
+    categories: [social]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Areddit.com&format=json&language=en&engines=google
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: philosophy
+    engine: json_engine
+    shortcut: phil
+    categories: [philosophy]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Aplato.stanford.edu+OR+site%3Aiep.utm.edu+OR+site%3Aiphlib.ru&format=json&language=en&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: ru science
+    engine: json_engine
+    shortcut: rusci
+    categories: [science]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Acyberleninka.ru+OR+site%3Aelibrary.ru&format=json&language=ru&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+
+  - name: education
+    engine: json_engine
+    shortcut: edu
+    categories: [education]
+    enable_http: true
+    timeout: 20.0
+    search_url: http://searxng-backend:8080/search?q={query}+site%3Aopenedu.ru+OR+site%3Astepik.org+OR+site%3Amccme.ru+OR+site%3Afoxford.ru+OR+site%3Aresh.edu.ru&format=json&language=ru&engines=google,mycse
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
