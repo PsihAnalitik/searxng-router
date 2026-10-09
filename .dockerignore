@@ -1,0 +1,11 @@
+**
+!router/
+!router/app.py
+!router/packs.json
+!router/Dockerfile
+!scripts/
+!scripts/render-settings.py
+!core-config/
+!core-config/settings.template.yml
+!backend-config/
+!backend-config/settings.template.yml

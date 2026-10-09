@@ -2,7 +2,7 @@
 # https://github.com/searxng/searxng/blob/master/searx/settings.yml
 #
 # Состав движков и доменных пакетов подобран по измерениям на этой машине,
-# см. .agent/decision-log.md. Коротко:
+# Доступность зависит от сети пользователя. Исторические наблюдения:
 #   - google (!go) держит site: вместе с OR и выдержал 15 запросов подряд -> на нём пакеты;
 #   - bing игнорирует site:, поэтому для пакетов не годится;
 #   - brave / startpage / duckduckgo / mojeek / wikidata / arch linux wiki /
@@ -13,9 +13,9 @@ use_default_settings: true
 
 general:
   instance_name: "SearXNG (local)"
-  # Счётчики по движкам в формате OpenMetrics на /metrics — основа учёта расхода
-  # платных ключей. Пароль обязателен, иначе эндпоинт отдаёт 404.
-  open_metrics: "__METRICS_PASSWORD__"
+  # Необязательные метрики бесплатных движков. Бюджет Tavily ведёт router.
+  # Без пароля эндпоинт отключён.
+  open_metrics: __METRICS_PASSWORD__
 
 search:
   # json нужен агентам: дефолт SearXNG отдаёт только html.
@@ -37,11 +37,12 @@ search:
     SearxEngineAccessDenied: 300
 
 server:
+  secret_key: __SEARXNG_SECRET__
   # Инстанс слушает только 127.0.0.1 на хосте, рейт-лимитер не нужен и мешает агенту.
   limiter: false
   public_instance: false
   image_proxy: false
-  # secret_key задаётся через SEARXNG_SECRET в .env, в файле его нет намеренно.
+  # Генерируется при запуске; SEARXNG_SECRET позволяет задать свой.
 
 valkey:
   url: valkey://valkey:6379/0
@@ -137,40 +138,8 @@ engines:
   - name: duckduckgo news
     disabled: false
 
-  # ─────────────────── доверенный индекс заказчика (ручной) ───────────────────
-  # Свой Programmable Search Engine на 20 сайтах. Отсечка после ~6 запросов подряд
-  # и молчаливый пустой ответ вместо ошибки, поэтому в общую выдачу не включён:
-  # вызывается только явно, бангом !my.
-  - name: mycse
-    engine: google_cse
-    shortcut: my
-    categories: [trusted]
-    CX: "f6c2c79a1cb9b40ca"
-    timeout: 15.0
+__OPTIONAL_CSE__
 
-  # ─────────────────── Tavily: поисковый API для агентов ───────────────────
-  # REST-API с ключом: ни CAPTCHA, ни антибота, кириллица работает без плясок
-  # с Accept-Language. Ключ подставляется скриптом scripts/render-settings.py
-  # из TAVILY_API_KEY в .env — в шаблоне стоит плейсхолдер.
-  #
-  # Ограничение json_engine: {query} попадает в тело как сырой текст, поэтому
-  # запрос с двойной кавычкой сломает JSON и вернёт HTTP 400. FIXME при
-  # необходимости — обходится только собственным модулем движка.
-  - name: tavily
-    engine: json_engine
-    shortcut: tv
-    categories: [general, web]
-    timeout: 20.0
-    method: POST
-    headers:
-      Content-Type: application/json
-      Authorization: Bearer __TAVILY_API_KEY__
-    request_body: '{{"query": "{query}", "max_results": 10}}'
-    search_url: https://api.tavily.com/search
-    results_query: results
-    url_query: url
-    title_query: title
-    content_query: content
   # ─────────────────────────── доменные пакеты ───────────────────────────
   # Каждый пакет — движок json_engine с зашитым site:-фильтром. Запрос уходит в
   # отдельный инстанс searxng-backend, наружу тот не публикуется.
@@ -186,7 +155,7 @@ engines:
     categories: [it]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Ahabr.com+OR+site%3Adocs.python.org+OR+site%3Awiki.archlinux.org+OR+site%3Adeveloper.mozilla.org&format=json&language=ru&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Ahabr.com+OR+site%3Adocs.python.org+OR+site%3Awiki.archlinux.org+OR+site%3Adeveloper.mozilla.org&format=json&language=ru&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -198,7 +167,7 @@ engines:
     categories: [weather]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Agismeteo.ru&format=json&language=ru&engines=google,yandex
+    search_url: http://backend:8080/search?q={query}+site%3Agismeteo.ru&format=json&language=ru&engines=google,yandex
     results_query: results
     url_query: url
     title_query: title
@@ -210,7 +179,7 @@ engines:
     categories: [msk]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Amos.ru+OR+site%3Amosmetro.ru+OR+site%3Aictransport.ru&format=json&language=ru&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Amos.ru+OR+site%3Amosmetro.ru+OR+site%3Aictransport.ru&format=json&language=ru&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -222,7 +191,7 @@ engines:
     categories: [news]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Atass.ru+OR+site%3Aria.ru+OR+site%3Akommersant.ru+OR+site%3Arbc.ru+OR+site%3Aduma.gov.ru+OR+site%3Akremlin.ru+OR+site%3Agovernment.ru&format=json&language=ru&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Atass.ru+OR+site%3Aria.ru+OR+site%3Akommersant.ru+OR+site%3Arbc.ru+OR+site%3Aduma.gov.ru+OR+site%3Akremlin.ru+OR+site%3Agovernment.ru&format=json&language=ru&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -234,7 +203,7 @@ engines:
     categories: [people]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Atadviser.ru&format=json&language=ru&engines=google,yandex
+    search_url: http://backend:8080/search?q={query}+site%3Atadviser.ru&format=json&language=ru&engines=google,yandex
     results_query: results
     url_query: url
     title_query: title
@@ -246,7 +215,7 @@ engines:
     categories: [rugeo]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Argo.ru+OR+site%3Arosstat.gov.ru+OR+site%3Aru.wikipedia.org&format=json&language=ru&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Argo.ru+OR+site%3Arosstat.gov.ru+OR+site%3Aru.wikipedia.org&format=json&language=ru&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -258,7 +227,7 @@ engines:
     categories: [world]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Anumbeo.com+OR+site%3Aworldbank.org+OR+site%3Amacrotrends.net+OR+site%3Aourworldindata.org&format=json&language=en&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Anumbeo.com+OR+site%3Aworldbank.org+OR+site%3Amacrotrends.net+OR+site%3Aourworldindata.org&format=json&language=en&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -270,7 +239,7 @@ engines:
     categories: [social]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Areddit.com&format=json&language=en&engines=google
+    search_url: http://backend:8080/search?q={query}+site%3Areddit.com&format=json&language=en&engines=google
     results_query: results
     url_query: url
     title_query: title
@@ -282,7 +251,7 @@ engines:
     categories: [philosophy]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Aplato.stanford.edu+OR+site%3Aiep.utm.edu+OR+site%3Aiphlib.ru&format=json&language=en&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Aplato.stanford.edu+OR+site%3Aiep.utm.edu+OR+site%3Aiphlib.ru&format=json&language=en&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -294,7 +263,7 @@ engines:
     categories: [science]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Acyberleninka.ru+OR+site%3Aelibrary.ru&format=json&language=ru&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Acyberleninka.ru+OR+site%3Aelibrary.ru&format=json&language=ru&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title
@@ -306,7 +275,7 @@ engines:
     categories: [education]
     enable_http: true
     timeout: 20.0
-    search_url: http://searxng-backend:8080/search?q={query}+site%3Aopenedu.ru+OR+site%3Astepik.org+OR+site%3Amccme.ru+OR+site%3Afoxford.ru+OR+site%3Aresh.edu.ru&format=json&language=ru&engines=google,mycse
+    search_url: http://backend:8080/search?q={query}+site%3Aopenedu.ru+OR+site%3Astepik.org+OR+site%3Amccme.ru+OR+site%3Afoxford.ru+OR+site%3Aresh.edu.ru&format=json&language=ru&engines=__PACK_ENGINES__
     results_query: results
     url_query: url
     title_query: title

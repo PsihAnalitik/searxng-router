@@ -18,6 +18,7 @@ search:
     SearxEngineAccessDenied: 300
 
 server:
+  secret_key: __SEARXNG_SECRET__
   limiter: false
   public_instance: false
   image_proxy: false
@@ -32,3 +33,4 @@ engines:
   - name: yandex
     disabled: false
     timeout: 12.0
+__OPTIONAL_CSE__

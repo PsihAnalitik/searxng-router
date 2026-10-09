@@ -1,52 +1,25 @@
 #!/usr/bin/env python3
-"""Собирает core-config/settings.yml из шаблона, подставляя ключи из .env.
-
-Нужен потому, что SearXNG не умеет читать значения настроек из переменных
-окружения (environ_name работает только для secret_key и подобных), а держать
-API-ключи в редактируемом конфиге нельзя. Правим шаблон, а не settings.yml.
-
-Заодно пишет router/packs.json — список доменов каждого тематического пакета,
-вынутый из его search_url. Так у роутера и у движков один источник истины:
-иначе фильтр по доменам разъедется с самими пакетами и начнёт молча резать
-верную выдачу.
-"""
+"""Prepare SearXNG settings and router packs in a dedicated runtime volume."""
 import json
+import os
 import pathlib
 import re
-import sys
+import secrets
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TEMPLATE = ROOT / "core-config" / "settings.template.yml"
-TARGET = ROOT / "core-config" / "settings.yml"
-PACKS = ROOT / "router" / "packs.json"
-ENV = ROOT / ".env"
-
-PLACEHOLDER = re.compile(r"__([A-Z0-9_]+)__")
 ENGINE_NAME = re.compile(r"^\s*-\s*name:\s*(.+?)\s*$")
 SEARCH_URL = re.compile(r"^\s*search_url:\s*(\S+)\s*$")
 SITE_FILTER = re.compile(r"site(?::|%3A)([A-Za-z0-9.\-]+)")
 
 
-def read_env(path):
-    values = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        values[key.strip()] = value.strip().strip("'\"")
-    return values
-
-
 def extract_packs(text):
-    """Домены пакетов из search_url: имя движка -> список доменов."""
+    """Keep domain packs derived from the existing SearXNG template."""
     packs = {}
     current = None
     for line in text.splitlines():
         found_name = ENGINE_NAME.match(line)
         if found_name:
             current = found_name.group(1)
-            continue
         found_url = SEARCH_URL.match(line)
         if found_url and current:
             domains = SITE_FILTER.findall(found_url.group(1))
@@ -55,24 +28,45 @@ def extract_packs(text):
     return packs
 
 
+def write_atomic(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_suffix(path.suffix + ".new")
+    staging.write_text(text, encoding="utf-8")
+    staging.chmod(0o644)
+    staging.replace(path)
+
+
+def render(output, env):
+    output.mkdir(parents=True, exist_ok=True)
+    secret_file = output / "secret"
+    secret = env.get("SEARXNG_SECRET", "").strip()
+    if not secret:
+        secret = secret_file.read_text().strip() if secret_file.exists() else secrets.token_hex(32)
+    write_atomic(secret_file, secret + "\n")
+    secret_file.chmod(0o600)
+    cx = env.get("GOOGLE_CSE_CX", "").strip()
+    cse = ""
+    if cx:
+        cse = ("  - name: mycse\n    engine: google_cse\n    shortcut: my\n"
+               "    categories: [trusted]\n    timeout: 15.0\n    CX: " + json.dumps(cx))
+    substitutions = {
+        "__SEARXNG_SECRET__": json.dumps(secret),
+        "__METRICS_PASSWORD__": json.dumps(env.get("METRICS_PASSWORD", "")),
+        "__OPTIONAL_CSE__": cse,
+        "__PACK_ENGINES__": "google,mycse" if cx else "google,yandex",
+    }
+    for name, source in (("core", "core-config/settings.template.yml"),
+                         ("backend", "backend-config/settings.template.yml")):
+        text = (ROOT / source).read_text(encoding="utf-8")
+        text = re.sub(r"__[A-Z0-9_]+__", lambda match: substitutions[match.group()], text)
+        write_atomic(output / name / "settings.yml", text)
+        if name == "core":
+            write_atomic(output / "packs.json", json.dumps(extract_packs(text), indent=2, sort_keys=True) + "\n")
+
+
 def main():
-    env = read_env(ENV)
-    text = TEMPLATE.read_text()
-
-    missing = sorted({m.group(1) for m in PLACEHOLDER.finditer(text) if not env.get(m.group(1))})
-    if missing:
-        # Молча подставить пустой ключ нельзя: движок будет отвечать 401 без внятной причины.
-        sys.exit("не заданы в .env: " + ", ".join(missing))
-
-    rendered = PLACEHOLDER.sub(lambda m: env[m.group(1)], text)
-    TARGET.write_text(rendered)
-    print("собран %s (подставлено плейсхолдеров: %d)"
-          % (TARGET.relative_to(ROOT), len(PLACEHOLDER.findall(text))))
-
-    packs = extract_packs(text)
-    PACKS.parent.mkdir(exist_ok=True)
-    PACKS.write_text(json.dumps(packs, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    print("собран %s (пакетов: %d)" % (PACKS.relative_to(ROOT), len(packs)))
+    render(pathlib.Path(os.environ.get("CONFIG_OUTPUT", "/config")), os.environ)
+    print("SearXNG configuration prepared (no paid credentials in SearXNG settings)")
 
 
 if __name__ == "__main__":

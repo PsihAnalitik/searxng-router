@@ -1,3 +1,6 @@
 .env
 core-config/settings.yml
 /.agent
+__pycache__/
+*.pyc
+.test-work/
