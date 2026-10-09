@@ -11,12 +11,12 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('provider_app', ROOT / 'router/app.py')
 app = importlib.util.module_from_spec(spec)
-with patch.dict('os.environ', {}, clear=True):
+with patch.dict('os.environ', {'TAVILY_TIMEOUT': '5', 'YANDEX_TIMEOUT': '3', 'GOOGLE_CSE_TIMEOUT': '5'}, clear=True):
     spec.loader.exec_module(app)
 
 
 def xml_response(xml):
-    return io.BytesIO(json.dumps({'rawData': base64.b64encode(xml.encode()).decode()}).encode())
+    return {'rawData': base64.b64encode(xml.encode()).decode()}
 
 
 class YandexTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class YandexTests(unittest.TestCase):
 
     def test_authorization_request_and_xml_result(self):
         xml = '<yandexsearch><response><results><grouping><group><doc><url>https://example.org/</url><title>Про <hlword>поиск</hlword></title><passages><passage>Первый <hlword>текст</hlword>.</passage><passage>Второй.</passage></passages></doc></group></grouping></results></response></yandexsearch>'
-        with patch.object(app.urllib.request, 'urlopen', return_value=xml_response(xml)) as call:
+        with patch.object(app, 'request_json', return_value=xml_response(xml)) as call:
             result = app.yandex_search('"поиск"', 'yandex-api', None, 'en')
         request = call.call_args.args[0]
         self.assertEqual(request.full_url, 'https://searchapi.api.cloud.yandex.net/v2/web/search')
@@ -43,7 +43,7 @@ class YandexTests(unittest.TestCase):
                                               'content': 'Первый текст. Второй.', 'engine': 'yandex-api'})
 
     def test_domain_pack_and_default_search_type(self):
-        with patch.object(app.urllib.request, 'urlopen', return_value=xml_response('<yandexsearch><response/></yandexsearch>')) as call:
+        with patch.object(app, 'request_json', return_value=xml_response('<yandexsearch><response/></yandexsearch>')) as call:
             app.yandex_search('философия', 'yandex-api', 'philosophy', None)
         body = json.loads(call.call_args.args[0].data)
         self.assertEqual(body['query']['searchType'], 'SEARCH_TYPE_RU')
@@ -51,18 +51,18 @@ class YandexTests(unittest.TestCase):
             self.assertIn('site:' + domain, body['query']['queryText'])
 
     def test_empty_results_are_not_a_provider_error(self):
-        with patch.object(app.urllib.request, 'urlopen', return_value=xml_response('<yandexsearch><response><error code="15">none</error></response></yandexsearch>')):
+        with patch.object(app, 'request_json', return_value=xml_response('<yandexsearch><response><error code="15">none</error></response></yandexsearch>')):
             self.assertEqual(app.yandex_search('test', 'yandex-api', None, None), {'results': []})
 
     def test_xml_quota_error_is_not_silently_empty(self):
         for code in ('32', '55', '42'):
-            with self.subTest(code=code), patch.object(app.urllib.request, 'urlopen', return_value=xml_response('<yandexsearch><response><error code="'+code+'">quota</error></response></yandexsearch>')):
+            with self.subTest(code=code), patch.object(app, 'request_json', return_value=xml_response('<yandexsearch><response><error code="'+code+'">quota</error></response></yandexsearch>')):
                 with self.assertRaises(ValueError):
                     app.yandex_search('test', 'yandex-api', None, None)
 
     def test_unsafe_or_malformed_xml_is_rejected(self):
         for xml in ('<!DOCTYPE yandexsearch [<!ENTITY x "text">]><yandexsearch/>', '<broken', '<html/>'):
-            with self.subTest(xml=xml), patch.object(app.urllib.request, 'urlopen', return_value=xml_response(xml)):
+            with self.subTest(xml=xml), patch.object(app, 'request_json', return_value=xml_response(xml)):
                 with self.assertRaises(ValueError):
                     app.yandex_search('test', 'yandex-api', None, None)
 
@@ -93,8 +93,48 @@ class QuotaFailoverTests(unittest.TestCase):
         failed = '<yandexsearch><response><error code="32">quota</error></response></yandexsearch>'
         success = '<yandexsearch><response><results><doc><url>https://example.org</url><title>OK</title></doc></results></response></yandexsearch>'
         engines = ['yandex-api', 'yandex-api-2']
-        with patch.object(app, 'PAID_ENGINES', engines), patch.object(app, 'PAID_KEYS', dict(zip(engines, ['fake-one', 'fake-two']))), patch.object(app, 'PAID_OPTIONS', {e: {'folder_id': 'folder'} for e in engines}), patch.object(app, 'upstream', return_value={'results': []}), patch.object(app, 'budget_state', side_effect=lambda e: {'engine': e, 'month_left': 5, 'day_left': 5}), patch.object(app, 'budget_reserve', return_value=True), patch.object(app.urllib.request, 'urlopen', side_effect=[xml_response(failed), xml_response(success)]) as paid:
+        with patch.object(app, 'PAID_ENGINES', engines), patch.object(app, 'PAID_KEYS', dict(zip(engines, ['fake-one', 'fake-two']))), patch.object(app, 'PAID_OPTIONS', {e: {'folder_id': 'folder'} for e in engines}), patch.object(app, 'upstream', return_value={'results': []}), patch.object(app, 'budget_state', side_effect=lambda e: {'engine': e, 'month_left': 5, 'day_left': 5}), patch.object(app, 'budget_reserve', return_value=True), patch.object(app, 'request_json', side_effect=[xml_response(failed), xml_response(success)]) as paid:
             result = app.search('test', None, 5, None)
         self.assertEqual(result['engines_used'], ['yandex-api-2'])
         self.assertIn('Yandex XML error 32', result['warnings'][0])
         self.assertEqual([c.args[0].get_header('Authorization') for c in paid.call_args_list], ['Api-Key fake-one', 'Api-Key fake-two'])
+
+
+class GoogleIntegrationTests(unittest.TestCase):
+    def test_configuration_and_suffixed_cx(self):
+        env = {'GOOGLE_CSE_API_KEY': 'one', 'GOOGLE_CSE_API_KEY_2': 'two',
+               'GOOGLE_CSE_CX': 'shared', 'GOOGLE_CSE_CX_2': 'second'}
+        self.assertEqual(list(app.configured_keys(env)), ['google-cse', 'google-cse-2'])
+        self.assertEqual(app.provider_option(env, 'google-cse-2', 'CX'), 'second')
+        with self.assertRaisesRegex(ValueError, 'GOOGLE_CSE_CX'):
+            app.configured_keys({'GOOGLE_CSE_API_KEY': 'one'})
+        self.assertEqual(app.configured_keys({'GOOGLE_CSE_CX': 'cx'}), {})
+
+    def test_google_quota_failover_and_domain_filter(self):
+        engines = ['google-cse', 'google-cse-2']
+        success = {'kind': 'customsearch#search', 'items': [
+            {'link': 'https://evil.test'}, {'link': 'https://docs.python.org/'}]}
+        with patch.object(app, 'PAID_ENGINES', engines), patch.object(app, 'PAID_KEYS', dict(zip(engines, ['one', 'two']))), patch.object(app, 'PAID_OPTIONS', {e: {'cx': 'cx'} for e in engines}), patch.object(app, 'ALLOWED_DOMAINS', ['python.org']), patch.object(app, 'upstream', return_value={'results': []}), patch.object(app, 'budget_state', side_effect=lambda e: {'engine': e, 'month_left': 5, 'day_left': 5}), patch.object(app, 'budget_reserve', return_value=True) as reserve, patch.object(app, 'request_json', side_effect=[urllib.error.HTTPError('', 403, 'quota', {}, None), success]) as paid:
+            result = app.search('test', None, 5, 'en')
+        self.assertEqual(result['engines_used'], ['google-cse-2'])
+        self.assertEqual([r['url'] for r in result['results']], ['https://docs.python.org/'])
+        self.assertEqual(reserve.call_count, 2)
+        self.assertIn('403', result['warnings'][0])
+        self.assertTrue(all(call.args[1] == 5 for call in paid.call_args_list))
+
+    def test_timeout_settings_and_yandex_fallback(self):
+        self.assertEqual(app.configured_timeouts({}, []), {})
+        self.assertEqual(app.configured_timeouts({'YANDEX_TIMEOUT': '1.25'}, ['yandex-api']), {'yandex-api': 1.25})
+        for env in ({}, {'YANDEX_TIMEOUT': ''}):
+            with self.assertRaisesRegex(ValueError, 'YANDEX_TIMEOUT is required'):
+                app.configured_timeouts(env, ['yandex-api'])
+        for value in ('0', '-1', 'nan', 'inf', 'bad'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                app.configured_timeouts({'YANDEX_TIMEOUT': value}, ['yandex-api'])
+        engines = ['yandex-api', 'tavily']
+        with patch.object(app, 'PAID_ENGINES', engines), patch.object(app, 'PAID_KEYS', {'yandex-api': 'fake'}), patch.object(app, 'PAID_OPTIONS', {'yandex-api': {'folder_id': 'folder'}}), patch.object(app, 'upstream', return_value={'results': []}), patch.object(app, 'budget_state', side_effect=lambda e: {'engine': e, 'month_left': 5, 'day_left': 5}), patch.object(app, 'budget_reserve', return_value=True) as reserve, patch.object(app, 'request_json', side_effect=TimeoutError('slow cloud')) as request, patch.object(app, 'tavily_search', return_value={'results': [{'url': 'https://example.org'}]}):
+            result = app.search('test', None, 5, None)
+        self.assertEqual(result['engines_used'], ['tavily'])
+        self.assertEqual(request.call_args.args[1], 3)
+        self.assertEqual(reserve.call_count, 2)
+        self.assertIn('таймаут', result['warnings'][0])

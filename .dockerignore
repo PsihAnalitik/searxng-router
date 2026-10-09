@@ -1,6 +1,8 @@
 **
 !router/
 !router/app.py
+!router/http_client.py
+!router/google_cse.py
 !router/packs.json
 !router/Dockerfile
 !scripts/

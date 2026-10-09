@@ -10,7 +10,7 @@ import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 FILES = ['docker-compose.yml', '.dockerignore', 'router/Dockerfile', 'router/app.py',
-         'router/packs.json', 'scripts/render-settings.py',
+         'router/packs.json', 'router/http_client.py', 'router/google_cse.py', 'scripts/render-settings.py',
          'core-config/settings.template.yml', 'backend-config/settings.template.yml']
 
 
@@ -27,7 +27,7 @@ def main():
         shutil.copyfile(ROOT / '.env.example', dest / '.env')
         # Host credentials/config overrides must not influence the clean-clone fixture.
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(('SEARXNG_', 'ROUTER_', 'TAVILY_', 'YANDEX_', 'LIMIT_', 'COMPOSE_'))
+               if not key.startswith(('SEARXNG_', 'ROUTER_', 'TAVILY_', 'YANDEX_', 'GOOGLE_CSE_', 'LIMIT_', 'COMPOSE_'))
                and key not in ('PAID_ENGINES', 'FREE_ENGINES', 'GOOGLE_CSE_CX', 'METRICS_PASSWORD')}
         def run(args, **kwargs):
             return subprocess.run(args, check=True, env=env, text=True, **kwargs)
@@ -81,16 +81,19 @@ print('PASS: clean-clone free-only HTTP/config, 11 packs, no Tavily engines')
             router_env.update(TAVILY_API_KEY='smoke-placeholder', TAVILY_API_KEY_2='smoke-placeholder-2',
                               LIMIT_TAVILY_2_DAY='7', PAID_ENGINES='auto',
                               YANDEX_API_KEY='smoke-yandex', YANDEX_FOLDER_ID='smoke-folder',
-                              YANDEX_API_KEY_2='smoke-yandex-2', LIMIT_YANDEX_API_2_DAY='3')
+                              YANDEX_API_KEY_2='smoke-yandex-2', LIMIT_YANDEX_API_2_DAY='3',
+                              GOOGLE_CSE_API_KEY='smoke-google', GOOGLE_CSE_CX='smoke-cx',
+                              GOOGLE_CSE_API_KEY_2='smoke-google-2', LIMIT_GOOGLE_CSE_2_DAY='2')
             save()
             run(compose + ['up', '-d', '--no-deps', '--force-recreate', '--wait', 'router'])
             print(python("""
 import json, urllib.request
 health = json.load(urllib.request.urlopen('http://localhost:8090/health'))
-assert health['paid'] == ['tavily', 'tavily-2', 'yandex-api', 'yandex-api-2'], health
+assert health['paid'] == ['tavily', 'tavily-2', 'yandex-api', 'yandex-api-2', 'google-cse', 'google-cse-2'], health
 states = json.load(urllib.request.urlopen('http://localhost:8090/budget'))['budget']
 assert next(s for s in states if s['engine'] == 'tavily-2')['day_limit'] == 7
 assert next(s for s in states if s['engine'] == 'yandex-api-2')['day_limit'] == 3
+assert next(s for s in states if s['engine'] == 'google-cse-2')['day_limit'] == 2
 print('PASS: optional keys and second-key limits applied without YAML engine edits')
 """))
             router_env['PAID_ENGINES'] = ''
@@ -102,7 +105,8 @@ assert json.load(urllib.request.urlopen('http://localhost:8090/health'))['paid']
 print('PASS: explicit empty pool disables configured keys')
 """))
             router_env.update(PAID_ENGINES='auto', TAVILY_API_KEY='', TAVILY_API_KEY_2='',
-                              YANDEX_API_KEY='', YANDEX_API_KEY_2='')
+                              YANDEX_API_KEY='', YANDEX_API_KEY_2='',
+                              GOOGLE_CSE_API_KEY='', GOOGLE_CSE_API_KEY_2='')
             save()
             run(compose + ['up', '-d', '--no-deps', '--force-recreate', '--wait', 'router'])
             print(python("""

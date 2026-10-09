@@ -25,6 +25,7 @@ import datetime
 import json
 import http.client
 import logging
+import math
 import pathlib
 import re
 import os
@@ -36,6 +37,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from router.http_client import request_json
+from router.google_cse import search as google_search
+
+
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://core:8080")
 VALKEY_HOST = os.environ.get("VALKEY_HOST", "valkey")
 VALKEY_PORT = int(os.environ.get("VALKEY_PORT", "6379"))
@@ -46,8 +51,28 @@ FREE_ENGINES = [e.strip() for e in os.environ.get(
     "FREE_ENGINES", "google,yandex,bing,duckduckgo web").split(",") if e.strip()]
 TAVILY_URL = "https://api.tavily.com/search"
 YANDEX_URL = "https://searchapi.api.cloud.yandex.net/v2/web/search"
-PROVIDERS = {"tavily": "TAVILY", "yandex-api": "YANDEX"}
+PROVIDERS = {"tavily": "TAVILY", "yandex-api": "YANDEX", "google-cse": "GOOGLE_CSE"}
 PACKS_FILE = os.environ.get("PACKS_FILE", str(pathlib.Path(__file__).with_name("packs.json")))
+
+
+def configured_timeouts(env, engines):
+    required = {provider_name(engine) for engine in engines}
+    deadlines = {}
+    for provider, prefix in PROVIDERS.items():
+        name = prefix + "_TIMEOUT"
+        raw = env.get(name, "").strip()
+        if not raw:
+            if provider in required:
+                raise ValueError(name + " is required for an enabled paid provider")
+            continue
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError(name + " must be finite and positive") from exc
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(name + " must be finite and positive")
+        deadlines[provider] = value
+    return deadlines
 
 
 def configured_domains(value):
@@ -105,13 +130,18 @@ def configured_keys(env):
         seen.add((provider, key))
         if provider == "yandex-api" and not provider_option(env, engine, "FOLDER_ID"):
             raise ValueError(engine + " requires YANDEX_FOLDER_ID (or its key-specific suffix)")
+        if provider == "google-cse" and not provider_option(env, engine, "CX"):
+            raise ValueError(engine + " requires GOOGLE_CSE_CX (or its key-specific suffix)")
     return available
 
 
 PAID_KEYS = configured_keys(os.environ)
 PAID_ENGINES = list(PAID_KEYS)
+PAID_TIMEOUTS = configured_timeouts(os.environ, PAID_ENGINES)
 PAID_OPTIONS = {engine: {"folder_id": provider_option(os.environ, engine, "FOLDER_ID")}
                 for engine in PAID_ENGINES if provider_name(engine) == "yandex-api"}
+PAID_OPTIONS.update({engine: {"cx": provider_option(os.environ, engine, "CX")}
+                     for engine in PAID_ENGINES if provider_name(engine) == "google-cse"})
 
 
 def _limits():
@@ -264,8 +294,7 @@ def tavily_search(query, engine, pack):
         TAVILY_URL, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + PAID_KEYS[engine]},
         method="POST")
-    with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
-        payload = json.load(response)
+    payload = request_json(request, PAID_TIMEOUTS[provider_name(engine)])
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         raise ValueError("Invalid Tavily response")
     for item in payload["results"]:
@@ -291,8 +320,7 @@ def yandex_search(query, engine, pack, language):
         YANDEX_URL, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json", "Authorization": "Api-Key " + PAID_KEYS[engine]},
         method="POST")
-    with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
-        payload = json.load(response)
+    payload = request_json(request, PAID_TIMEOUTS[provider_name(engine)])
     if not isinstance(payload, dict) or not isinstance(payload.get("rawData"), str):
         raise ValueError("Invalid Yandex response")
     xml = base64.b64decode(payload["rawData"], validate=True).decode("utf-8")
@@ -325,7 +353,11 @@ def paid_search(query, engine, pack, language):
     provider = provider_name(engine)
     if provider == "tavily":
         return tavily_search(query, engine, pack)
-    return yandex_search(query, engine, pack, language)
+    if provider == "yandex-api":
+        return yandex_search(query, engine, pack, language)
+    return google_search(query, engine, PACKS[pack] if pack else ALLOWED_DOMAINS, language,
+                         PAID_KEYS[engine], PAID_OPTIONS[engine]["cx"],
+                         lambda request: request_json(request, PAID_TIMEOUTS[provider]))
 
 
 def upstream(query, engines, language):
@@ -447,6 +479,9 @@ def search(query, pack, limit, language):
             # Do not expose response bodies or credentials in errors.
             warnings.append("%s: HTTP %s; попытка учтена в бюджете" % (engine, exc.code))
             exc.close()
+            continue
+        except TimeoutError:
+            warnings.append("%s: таймаут; попытка учтена в бюджете" % engine)
             continue
         except ProviderResponseError as exc:
             warnings.append("%s: %s; попытка учтена в бюджете" % (engine, exc))

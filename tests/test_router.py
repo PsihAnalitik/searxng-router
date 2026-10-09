@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("tested_router", ROOT / "router/app.py")
 router = importlib.util.module_from_spec(SPEC)
-with patch.dict("os.environ", {}, clear=True):
+with patch.dict("os.environ", {"TAVILY_TIMEOUT": "5", "YANDEX_TIMEOUT": "3", "GOOGLE_CSE_TIMEOUT": "5"}, clear=True):
     SPEC.loader.exec_module(router)
 
 
@@ -255,19 +255,19 @@ class PayloadTests(unittest.TestCase):
                 {"results": [{"url": u} for u in bad + good]}, None)], good)
 
     def test_tavily_receives_global_domains_and_skips_invalid_items(self):
-        response = io.BytesIO(json.dumps({"results": [None, {"url": "https://python.org/"}]}).encode())
+        response = {"results": [None, {"url": "https://python.org/"}]}
         with patch.object(router, "ALLOWED_DOMAINS", ["python.org"]), patch.object(
                 router, "PAID_KEYS", {"tavily": "fake-key"}), patch.object(
-                router.urllib.request, "urlopen", return_value=response) as request:
+                router, "request_json", return_value=response) as request:
             payload = router.tavily_search("query", "tavily", None)
         self.assertEqual(json.loads(request.call_args.args[0].data)["include_domains"], ["python.org"])
         self.assertEqual(payload["results"][1]["engine"], "tavily")
 
     def test_tavily_serializes_quoted_unicode_and_pack_domains(self):
         query = '"точная фраза"\nновая строка \\ slash'
-        response = io.BytesIO(json.dumps(result()).encode())
+        response = result()
         with patch.object(router, "PAID_KEYS", {"tavily": "fake-key"}), patch.object(
-                router.urllib.request, "urlopen", return_value=response) as urlopen:
+                router, "request_json", return_value=response) as urlopen:
             payload = router.tavily_search(query, "tavily", "philosophy")
         request = urlopen.call_args.args[0]
         body = json.loads(request.data)
